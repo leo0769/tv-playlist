@@ -1,0 +1,10 @@
+{
+ "_note": "这些域名从境外 runner 能连通、从国内家宽判死（结论相反），只能按实测静态拉黑。新增前先在本机跑 deep_check 复核，别把会飘的地址写进来。",
+ "_updated": "2026-11-02T00:00+08:00",
+ "hosts": [
+  "jdshipin.com",
+  "hidns.vip",
+  "qd.je"
+ ],
+ "hostports": []
+}

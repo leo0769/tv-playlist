@@ -42,6 +42,32 @@ OFFICIAL = (
 )
 # 纯音频电台：电视上表现为黑屏有声
 AUDIO_ONLY = ("ls.qingting.fm", "lhttp.qingting.fm")
+
+# 国内网络判死的转发站。这些域名从境外 runner 能连通、从国内用户家宽不通（或反之），
+# 探活结论在两地正好相反，只能按实测结果静态拉黑，否则每天都会被 CI“探活通过”重新塞回来。
+CN_BLOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cn_block.json")
+
+
+def load_cn_block():
+    try:
+        with open(CN_BLOCK_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+    except Exception:
+        return [], []
+    return tuple(d.get("hosts", [])), tuple(d.get("hostports", []))
+
+
+CN_BLOCK_HOSTS, CN_BLOCK_HOSTPORTS = load_cn_block()
+
+
+def cn_blocked(url):
+    p = urllib.parse.urlparse(url)
+    host = (p.hostname or "").lower()
+    hp = host + (":%d" % p.port if p.port else "")
+    if any(host == h or host.endswith("." + h) or host.endswith(h) for h in CN_BLOCK_HOSTS):
+        return True
+    return any(hp.startswith(x) for x in CN_BLOCK_HOSTPORTS)
+
 # 垃圾条目
 BAD_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}")
 BAD_FLAG = re.compile(r"\[(Geo-blocked|Not 24/7|Offline)\]", re.I)
@@ -343,12 +369,31 @@ def main():
             stats[s] = -1
             print("[fail] %-72s %s" % (s, e))
     print("合计条目:", len(entries))
+
+    # 手工钉住的线路：境外 runner 探不到、国内确实能播的地址放这里，永远不会被探活结果删掉，
+    # 而且排在同频道第一位。CI 每天重建时如果把这些地址漏掉，用户的电视频道就整条消失。
+    pinned = set()
+    pin_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pinned.m3u")
+    if os.path.exists(pin_file):
+        try:
+            with open(pin_file, encoding="utf-8") as f:
+                got = parse_m3u(f.read())
+            for e in got:
+                e["src"] = -1
+                e["pin"] = True
+                pinned.add(e["url"])
+            entries.extend(got)
+            print("钉住线路:", len(got))
+        except Exception as e:
+            print("[warn] pinned.m3u 解析失败:", e)
+
     if not entries:
         print("没有拿到任何条目，中止")
         return 2
 
     chans, order = {}, []
     skipped = 0
+    blocked = 0
     for e in entries:
         raw_name = e["name"] or e["tvgname"]
         if not raw_name:
@@ -359,6 +404,9 @@ def main():
             continue
         if any(h in e["url"] for h in AUDIO_ONLY):
             skipped += 1
+            continue
+        if cn_blocked(e["url"]):
+            blocked += 1
             continue
 
         # iptv-org 条目：tvg-id 能在别名表里对上才收，改写成中文台名
@@ -394,30 +442,33 @@ def main():
             c["group"] = group
 
     all_urls = [u for k in order for u in chans[k]["uris"]]
-    print("唯一频道:", len(order), "| 待测地址:", len(all_urls), "| 跳过:", skipped)
+    print("唯一频道:", len(order), "| 待测地址:", len(all_urls),
+          "| 跳过:", skipped, "| 国内拉黑:", blocked)
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
         flags = list(ex.map(lambda u: alive(u, args.timeout), all_urls))
     ok = dict(zip(all_urls, flags))
     print("清单存活:", sum(flags), "/", len(all_urls), "| 用时: %ds" % int(time.time() - t0))
 
+    deep_ok = {u: True for u in all_urls}
     if not args.no_deep:
         cand = [u for u in all_urls if ok[u]]
         t1 = time.time()
         with ThreadPoolExecutor(max_workers=args.workers) as ex:
             deep = list(ex.map(lambda u: deep_alive(u, args.timeout), cand))
-        for u, d in zip(cand, deep):
-            ok[u] = d
+        deep_ok = dict(zip(cand, deep))
         print("分片可播:", sum(deep), "/", len(cand), "| 用时: %ds" % int(time.time() - t1))
 
     final, dropped = [], 0
     for k in order:
         c = chans[k]
-        live = [u for u in c["uris"] if ok.get(u)]
+        live = [u for u in c["uris"] if ok.get(u) or u in pinned]
         if not live:
             dropped += 1
             continue
-        live.sort(key=lambda u: -score(u, c["srcmap"].get(u, 9)))
+        # 钉住的最前；其余按“分片验证通过 > 评分”排，未通过分片验证的留作兜底
+        live.sort(key=lambda u: (u not in pinned, not deep_ok.get(u, False),
+                                 -score(u, c["srcmap"].get(u, 9))))
         c["uris"] = live[: args.max_uris]
         c["official"] = any(h in c["uris"][0] for h in OFFICIAL)
         final.append(c)
