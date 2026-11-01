@@ -1,0 +1,65 @@
+name: Update playlist
+
+on:
+  schedule:
+    # UTC 06:17 / 14:17 / 18:17 = 北京时间 14:17 / 22:17 / 次日 02:17
+    - cron: "17 6,14,18 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: playlist
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build playlist
+        env:
+          # 顺序即优先级（同频道取前 3 条存活地址）
+          SOURCES: >-
+            https://guovin.github.io/iptv-api/result.m3u,
+            https://raw.githubusercontent.com/vbskycn/iptv/master/tv/iptv4.m3u,
+            https://raw.githubusercontent.com/YueChan/Live/main/IPTV.m3u,
+            https://iptv-org.github.io/iptv/countries/cn.m3u
+        run: python scripts/build_playlist.py --out-dir public --workers 32 --timeout 8 --max-uris 3
+
+      - name: Commit result
+        run: |
+          git config user.name  "playlist-bot"
+          git config user.email "playlist-bot@users.noreply.github.com"
+          git add public
+          if git diff --cached --quiet; then
+            echo "no change"
+          else
+            git commit -m "chore: refresh playlist $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push
+          fi
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
