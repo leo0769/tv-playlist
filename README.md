@@ -6,11 +6,16 @@
 
 ## 订阅地址（永久不变）
 
+GitHub Pages 的域名规则是固定的，把下面的占位符换成你自己的 GitHub 用户名即可：
+
 | 用途 | 地址 |
 |---|---|
-| **my-tv-0（推荐）** | `https://leo0769.github.io/tv-playlist/channels.json` |
-| 通用 m3u 播放器 | `https://leo0769.github.io/tv-playlist/channels.m3u` |
-| 构建状态 | `https://leo0769.github.io/tv-playlist/meta.json` |
+| **my-tv-0（推荐）** | `https://<GITHUB_USER>.github.io/tv-playlist/channels.json` |
+| 通用 m3u 播放器 | `https://<GITHUB_USER>.github.io/tv-playlist/channels.m3u` |
+| 构建状态 | `https://<GITHUB_USER>.github.io/tv-playlist/meta.json` |
+| 节目单（合法空 XMLTV） | `https://<GITHUB_USER>.github.io/tv-playlist/epg.xml` |
+
+> `<GITHUB_USER>` 即本仓库所有者的 GitHub 用户名。为减少账号与内容的公开关联，本文不直接写出实际域名。
 
 `channels.json` 是 my-tv-0 原生格式，**同一频道可挂 2~3 条线路**，播放失败时播放器会自动换线。
 

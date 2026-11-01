@@ -52,6 +52,8 @@ INDEX_TPL = """<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>tv-playlist - 中文电视直播源</title>
+<meta name="robots" content="noindex,nofollow">
+
 <style>
   body{margin:0;padding:48px 24px;font:16px/1.7 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#fafafa;color:#1a1a1a}
   .wrap{max-width:720px;margin:0 auto}
