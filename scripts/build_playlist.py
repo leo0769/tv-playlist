@@ -247,6 +247,59 @@ def alive(url, timeout):
         return False
 
 
+def _get(url, timeout, rng=None):
+    hdr = {"User-Agent": UA, "Connection": "close"}
+    if rng:
+        hdr["Range"] = rng
+    req = urllib.request.Request(url, headers=hdr)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.status, r.geturl(), r.read(65536)
+
+
+def is_video_segment(head):
+    """分片头部判型：TS 同步字节 / fMP4 的 ftyp / ADTS 帧头。封面图、HTML 错误页一律判死。"""
+    if not head:
+        return False
+    if head[:3] == b"\xff\xd8\xff" or head[:4] == b"\x89PNG":
+        return False                      # 静态图片（很多“转发站”用图片冒充直播）
+    if head[0] == 0x47:
+        return True                       # MPEG-TS
+    if b"ftyp" in head[:12]:
+        return True                       # fMP4
+    return head[:2] in (b"\xff\xf1", b"\xff\xf9")   # ADTS 音频
+
+
+def deep_alive(url, timeout):
+    """三层验证：主清单 → 子清单 → 首个分片。
+    只看到 m3u8 就判活会大量误收（转发站会给一个能读的清单，分片却 404/502 或返回图片），
+    而播放器一进到这个死线路就要重试 10 次才肯换下一条，用户体感就是“打不开”。"""
+    for attempt in range(2):
+        try:
+            t = timeout + attempt * 3
+            st, eff, body = _get(url, t)
+            if st != 200 or b"#EXTM3U" not in body[:4096]:
+                continue
+            lines = [x.strip() for x in body.decode("utf-8", "ignore").splitlines() if x.strip()]
+            if any(x.startswith("#EXT-X-STREAM-INF") for x in lines):
+                var = next((x for x in lines if not x.startswith("#")), None)
+                if not var:
+                    continue
+                st, eff, body = _get(urllib.parse.urljoin(eff, var), t)
+                if st != 200 or b"#EXTM3U" not in body[:4096]:
+                    continue
+                lines = [x.strip() for x in body.decode("utf-8", "ignore").splitlines() if x.strip()]
+            seg = next((x for x in lines if not x.startswith("#")), None)
+            if not seg:
+                continue
+            st, _, head = _get(urllib.parse.urljoin(eff, seg), t, "bytes=0-2047")
+            if st in (200, 206) and is_video_segment(head):
+                return True
+        except Exception:
+            pass
+        time.sleep(0.3 * (attempt + 1))
+    return False
+
+
 IP_HOST = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
 
 
@@ -271,6 +324,7 @@ def main():
     ap.add_argument("--workers", type=int, default=24)
     ap.add_argument("--timeout", type=int, default=8)
     ap.add_argument("--max-uris", type=int, default=3, help="同一频道最多保留几个候选地址")
+    ap.add_argument("--no-deep", action="store_true", help="跳过三层深度验证（只做清单探活）")
     args = ap.parse_args()
 
     sources = [s.strip() for s in (args.sources or ",".join(DEFAULT_SOURCES)).split(",") if s.strip()]
@@ -345,7 +399,16 @@ def main():
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
         flags = list(ex.map(lambda u: alive(u, args.timeout), all_urls))
     ok = dict(zip(all_urls, flags))
-    print("存活:", sum(flags), "/", len(all_urls), "| 用时: %ds" % int(time.time() - t0))
+    print("清单存活:", sum(flags), "/", len(all_urls), "| 用时: %ds" % int(time.time() - t0))
+
+    if not args.no_deep:
+        cand = [u for u in all_urls if ok[u]]
+        t1 = time.time()
+        with ThreadPoolExecutor(max_workers=args.workers) as ex:
+            deep = list(ex.map(lambda u: deep_alive(u, args.timeout), cand))
+        for u, d in zip(cand, deep):
+            ok[u] = d
+        print("分片可播:", sum(deep), "/", len(cand), "| 用时: %ds" % int(time.time() - t1))
 
     final, dropped = [], 0
     for k in order:
@@ -402,7 +465,8 @@ def main():
         "multi_uri_channels": sum(1 for c in final if len(c["uris"]) > 1),
         "official_cdn_channels": sum(1 for c in final if c["official"]),
         "urls_tested": len(all_urls),
-        "urls_alive": int(sum(flags)),
+        "urls_listed": int(sum(flags)),
+        "urls_alive": sum(1 for v in ok.values() if v),
         "dropped_all_dead": dropped,
         "sources": stats,
     }
