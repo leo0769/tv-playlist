@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tv generator-info-name="tv-playlist">
+  <!-- 上游 iptv-api 已停止发布 EPG（epg.gz / epg.xml 均 404），
+       第三方 EPG（live.fanmingming.cn / epg.112114.xyz）在本机与电视端均不可达。
+       这里放一份合法的空 XMLTV：播放器拿到的是"无节目信息"，而不是解析异常后
+       在 5 个镜像之间反复重试。 -->
+</tv>

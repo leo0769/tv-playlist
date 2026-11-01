@@ -46,6 +46,54 @@ AUDIO_ONLY = ("ls.qingting.fm", "lhttp.qingting.fm")
 BAD_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}")
 BAD_FLAG = re.compile(r"\[(Geo-blocked|Not 24/7|Offline)\]", re.I)
 
+INDEX_TPL = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>tv-playlist - 中文电视直播源</title>
+<style>
+  body{margin:0;padding:48px 24px;font:16px/1.7 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#fafafa;color:#1a1a1a}
+  .wrap{max-width:720px;margin:0 auto}
+  h1{font-size:26px;margin:0 0 6px}
+  p.sub{color:#666;margin:0 0 26px}
+  .stats{display:flex;gap:22px;flex-wrap:wrap;margin:0 0 26px;font-size:14px;color:#444}
+  .stats b{font-size:20px;color:#0b6b3a;display:block}
+  .card{background:#fff;border:1px solid #e6e6e6;border-radius:12px;padding:16px 18px;margin:0 0 12px}
+  .card h2{font-size:14px;margin:0 0 6px;color:#555;font-weight:600}
+  code{display:block;word-break:break-all;background:#f2f2f2;border-radius:8px;padding:9px 12px;font-size:13.5px;color:#0b6b3a}
+  .meta{font-size:13px;color:#888;margin-top:24px}
+  a{color:#0b6b3a}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>tv-playlist</h1>
+  <p class="sub">自动聚合、探活、去重的中文电视直播源</p>
+  <div class="stats">
+    <div><b>__CHANNELS__</b>个频道</div>
+    <div><b>__MULTI__</b>个多线路</div>
+    <div><b>__OFFICIAL__</b>个官方 CDN</div>
+    <div><b>__ALIVE__/__TESTED__</b>地址存活</div>
+  </div>
+  <div class="card"><h2>my-tv-0 订阅（推荐，多线路自动回退）</h2>
+    <code>https://leo0769.github.io/tv-playlist/channels.json</code></div>
+  <div class="card"><h2>通用 m3u</h2>
+    <code>https://leo0769.github.io/tv-playlist/channels.m3u</code></div>
+  <div class="card"><h2>构建状态</h2>
+    <code>https://leo0769.github.io/tv-playlist/meta.json</code></div>
+  <div class="card"><h2>EPG（合法空 XMLTV，占位）</h2>
+    <code>https://leo0769.github.io/tv-playlist/epg.xml</code></div>
+  <p class="meta">
+    最后构建：__UPDATED__<br>
+    数据来源：iptv-api / vbskycn-iptv / YueChan-Live / iptv-org<br>
+    本项目只做公开源的聚合与测活，不存储、不转播任何流媒体内容。
+  </p>
+</div>
+</body>
+</html>
+"""
+
 # iptv-org 的 tvg-id（去掉 @SD/@HD 后缀）-> 中文台名, 分组
 # 只收台名无歧义的主流频道，避免多路回退时串台
 ORG_ALIAS = {
@@ -358,6 +406,20 @@ def main():
     }
     with open(os.path.join(args.out_dir, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=1)
+
+    # 首页（静态占位页，带本次构建统计）
+    html = INDEX_TPL
+    for k, v in (
+        ("__UPDATED__", meta["updated"].replace("T", " ").replace("Z", " UTC")),
+        ("__CHANNELS__", str(meta["channels"])),
+        ("__MULTI__", str(meta["multi_uri_channels"])),
+        ("__OFFICIAL__", str(meta["official_cdn_channels"])),
+        ("__ALIVE__", str(meta["urls_alive"])),
+        ("__TESTED__", str(meta["urls_tested"])),
+    ):
+        html = html.replace(k, v)
+    with open(os.path.join(args.out_dir, "index.html"), "w", encoding="utf-8") as f:
+        f.write(html)
 
     print("输出: %d 个频道（官方 CDN %d，多地址 %d，全死丢弃 %d）"
           % (len(final), meta["official_cdn_channels"],
