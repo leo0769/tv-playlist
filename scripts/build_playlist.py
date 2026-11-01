@@ -18,6 +18,7 @@ import os
 import re
 import sys
 import time
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
@@ -196,6 +197,23 @@ def alive(url, timeout):
         return False
 
 
+IP_HOST = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+
+
+def score(url, src_rank):
+    """线路打分：官方 CDN > HTTPS > 上游顺序；纯 IP 中转扣分（这类地址寿命最短）"""
+    s = 0
+    if any(h in url for h in OFFICIAL):
+        s += 6
+    if url.startswith("https://"):
+        s += 2
+    host = (urllib.parse.urlparse(url).hostname or "")
+    if IP_HOST.match(host):
+        s -= 3
+    s += max(0, 4 - src_rank)   # 越靠前的上游，其标注越可信
+    return s
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out-dir", default="public")
@@ -208,10 +226,12 @@ def main():
     sources = [s.strip() for s in (args.sources or ",".join(DEFAULT_SOURCES)).split(",") if s.strip()]
 
     entries, stats = [], {}
-    for s in sources:
+    for si, s in enumerate(sources):
         try:
             text = fetch(s)
             got = parse_m3u(text)
+            for e in got:
+                e["src"] = si
             stats[s] = len(got)
             print("[ok]   %-72s %d 条" % (s, len(got)))
             entries.extend(got)
@@ -257,11 +277,13 @@ def main():
             skipped += 1
             continue
         if key not in chans:
-            chans[key] = {"name": name, "group": group, "logo": e["logo"], "uris": []}
+            chans[key] = {"name": name, "group": group, "logo": e["logo"],
+                          "uris": [], "srcmap": {}}
             order.append(key)
         c = chans[key]
         if e["url"] not in c["uris"]:
             c["uris"].append(e["url"])
+            c["srcmap"][e["url"]] = e.get("src", 9)
         if not c["logo"] and e["logo"]:
             c["logo"] = e["logo"]
         if (not c["group"] or c["group"] in ("其他", "未分类", "Undefined")) and group:
@@ -282,7 +304,7 @@ def main():
         if not live:
             dropped += 1
             continue
-        live.sort(key=lambda u: 0 if any(h in u for h in OFFICIAL) else 1)
+        live.sort(key=lambda u: -score(u, c["srcmap"].get(u, 9)))
         c["uris"] = live[: args.max_uris]
         c["official"] = any(h in c["uris"][0] for h in OFFICIAL)
         final.append(c)
