@@ -49,6 +49,9 @@ jobs:
           fi
 
       - uses: actions/configure-pages@v5
+        with:
+          # 首次运行时自动创建 Pages 站点（无需手工去 Settings 里开）
+          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:
