@@ -1,10 +1,19 @@
 {
- "_note": "这些域名从境外 runner 能连通、从国内家宽判死（结论相反），只能按实测静态拉黑。新增前先在本机跑 deep_check 复核，别把会飘的地址写进来。",
- "_updated": "2026-11-02T00:00+08:00",
- "hosts": [
+ "_note": "国内家宽与境外 CI runner 的探活结论经常相反，这里按实测结果做静态修正。soft 只降权沉底、不删频道；hard 会直接丢弃地址（慎用，整域硬删曾导致 ViuTV/翡翠台整条消失）。keep_channels 里的频道即使全部线路探活失败也保留 1 条。",
+ "_updated": "2026-11-02T21:20+08:00",
+ "hard_hosts": [],
+ "hard_hostports": [],
+ "soft_hosts": [
   "jdshipin.com",
   "hidns.vip",
-  "qd.je"
+  "qd.je",
+  "163189.xyz"
  ],
- "hostports": []
+ "keep_channels": [
+  "VIUTV",
+  "翡翠台",
+  "明珠台",
+  "无线新闻",
+  "凤凰香港"
+ ]
 }

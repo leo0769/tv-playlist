@@ -44,7 +44,14 @@ OFFICIAL = (
 AUDIO_ONLY = ("ls.qingting.fm", "lhttp.qingting.fm")
 
 # 国内网络判死的转发站。这些域名从境外 runner 能连通、从国内用户家宽不通（或反之），
-# 探活结论在两地正好相反，只能按实测结果静态拉黑，否则每天都会被 CI“探活通过”重新塞回来。
+# 探活结论在两地正好相反，只能按实测结果静态处理。
+#
+# 两级策略（2026-11-02 修正）：
+#   hard  -> 直接丢弃该地址。只用于「能读清单但分片确定是图片/404 且同域全废」的情况。
+#   soft  -> 不丢弃，只降权沉底。用于「同一域名下混着好线路和坏线路」的情况。
+#            之前的做法是把 jdshipin.com 整个塞进 hard，结果 ViuTV / 翡翠台 / 明珠台
+#            这些只挂在该域名上的频道被整条删除，用户端表现为「台凭空消失」——
+#            这是比「线路不稳」严重得多的体验倒退。
 CN_BLOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cn_block.json")
 
 
@@ -53,20 +60,32 @@ def load_cn_block():
         with open(CN_BLOCK_FILE, encoding="utf-8") as f:
             d = json.load(f)
     except Exception:
-        return [], []
-    return tuple(d.get("hosts", [])), tuple(d.get("hostports", []))
+        return [], [], (), set()
+    return (tuple(d.get("hard_hosts", [])), tuple(d.get("hard_hostports", [])),
+            tuple(d.get("soft_hosts", [])), set(d.get("keep_channels", [])))
 
 
-CN_BLOCK_HOSTS, CN_BLOCK_HOSTPORTS = load_cn_block()
+CN_HARD_HOSTS, CN_HARD_HOSTPORTS, CN_SOFT_HOSTS, KEEP_CHANNELS = load_cn_block()
 
 
-def cn_blocked(url):
+def _host_match(url, hosts):
+    p = urllib.parse.urlparse(url)
+    host = (p.hostname or "").lower()
+    return any(host == h or host.endswith("." + h) for h in hosts)
+
+
+def cn_hard_blocked(url):
     p = urllib.parse.urlparse(url)
     host = (p.hostname or "").lower()
     hp = host + (":%d" % p.port if p.port else "")
-    if any(host == h or host.endswith("." + h) or host.endswith(h) for h in CN_BLOCK_HOSTS):
+    if _host_match(url, CN_HARD_HOSTS):
         return True
-    return any(hp.startswith(x) for x in CN_BLOCK_HOSTPORTS)
+    return any(hp.startswith(x) for x in CN_HARD_HOSTPORTS)
+
+
+def cn_soft(url):
+    """软标记：地址保留，但排到同频道最后。"""
+    return _host_match(url, CN_SOFT_HOSTS)
 
 # 垃圾条目
 BAD_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}")
@@ -274,12 +293,15 @@ def alive(url, timeout):
 
 
 def _get(url, timeout, rng=None):
+    """返回 (status, 最终URL, 内容, 耗时秒)；耗时用于估算首分片带宽。"""
     hdr = {"User-Agent": UA, "Connection": "close"}
     if rng:
         hdr["Range"] = rng
     req = urllib.request.Request(url, headers=hdr)
+    t0 = time.time()
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.status, r.geturl(), r.read(65536)
+        body = r.read(65536)
+        return r.status, r.geturl(), body, time.time() - t0
 
 
 def is_video_segment(head):
@@ -295,14 +317,11 @@ def is_video_segment(head):
     return head[:2] in (b"\xff\xf1", b"\xff\xf9")   # ADTS 音频
 
 
-def deep_alive(url, timeout):
-    """三层验证：主清单 → 子清单 → 首个分片。
-    只看到 m3u8 就判活会大量误收（转发站会给一个能读的清单，分片却 404/502 或返回图片），
-    而播放器一进到这个死线路就要重试 10 次才肯换下一条，用户体感就是“打不开”。"""
+def _probe_once(url, timeout):
     for attempt in range(2):
         try:
             t = timeout + attempt * 3
-            st, eff, body = _get(url, t)
+            st, eff, body, _ = _get(url, t)
             if st != 200 or b"#EXTM3U" not in body[:4096]:
                 continue
             lines = [x.strip() for x in body.decode("utf-8", "ignore").splitlines() if x.strip()]
@@ -310,20 +329,47 @@ def deep_alive(url, timeout):
                 var = next((x for x in lines if not x.startswith("#")), None)
                 if not var:
                     continue
-                st, eff, body = _get(urllib.parse.urljoin(eff, var), t)
+                st, eff, body, _ = _get(urllib.parse.urljoin(eff, var), t)
                 if st != 200 or b"#EXTM3U" not in body[:4096]:
                     continue
                 lines = [x.strip() for x in body.decode("utf-8", "ignore").splitlines() if x.strip()]
             seg = next((x for x in lines if not x.startswith("#")), None)
             if not seg:
                 continue
-            st, _, head = _get(urllib.parse.urljoin(eff, seg), t, "bytes=0-2047")
+            st, _, head, dt = _get(urllib.parse.urljoin(eff, seg), t, "bytes=0-65535")
             if st in (200, 206) and is_video_segment(head):
-                return True
+                # 缓存命中时 dt 极小会让速率虚高，封顶 20Mbps 避免排序被噪声带偏
+                kbps = min(len(head) * 8 / 1000.0 / max(dt, 0.001), 20000)
+                return True, int(kbps)
         except Exception:
             pass
         time.sleep(0.3 * (attempt + 1))
-    return False
+    return False, 0
+
+
+def deep_probe(url, timeout, samples=3):
+    """三层验证 + 多次采样；返回 (是否可播, 首分片吞吐 kbps)。
+
+    只看到 m3u8 就判活会大量误收（转发站会给一个能读的清单，分片却 404/502 或返回图片），
+    而播放器一进到这个死线路就要重试 10 次才肯换下一条，用户体感就是“打不开”。
+
+    增补 1：首分片按 64KB 读，顺带量吞吐。只测「能不能拿到 2KB」无法区分
+    「能播」和「能播但几秒一卡」——实测过 2891kbps 的台单分片要 47 秒才下来。
+
+    增补 2：多次采样，过半通过才算活。广东体育那两条线路是「同一秒内两次请求
+    一次 200 一次 404」的抖动源（源站多后端，部分节点没同步该频道），单次探活
+    随机判活，构建时活的线路到了播放时已经死了，用户看到的就是「播几十秒卡死」。
+    抖动源不删（可能是唯一线路），但判不稳后会被排到最后。"""
+    results = [_probe_once(url, timeout) for _ in range(max(1, samples))]
+    good = [k for ok, k in results if ok]
+    if len(good) * 2 <= samples:        # 不过半 -> 判不稳
+        return False, 0
+    good.sort()
+    return True, good[len(good) // 2]   # 中位吞吐，避免单次峰值带偏
+
+
+def deep_alive(url, timeout):
+    return deep_probe(url, timeout)[0]
 
 
 IP_HOST = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
@@ -405,7 +451,7 @@ def main():
         if any(h in e["url"] for h in AUDIO_ONLY):
             skipped += 1
             continue
-        if cn_blocked(e["url"]):
+        if cn_hard_blocked(e["url"]):
             blocked += 1
             continue
 
@@ -451,26 +497,55 @@ def main():
     print("清单存活:", sum(flags), "/", len(all_urls), "| 用时: %ds" % int(time.time() - t0))
 
     deep_ok = {u: True for u in all_urls}
+    deep_kbps = {u: 0 for u in all_urls}
     if not args.no_deep:
         cand = [u for u in all_urls if ok[u]]
         t1 = time.time()
         with ThreadPoolExecutor(max_workers=args.workers) as ex:
-            deep = list(ex.map(lambda u: deep_alive(u, args.timeout), cand))
-        deep_ok = dict(zip(cand, deep))
-        print("分片可播:", sum(deep), "/", len(cand), "| 用时: %ds" % int(time.time() - t1))
+            deep = list(ex.map(lambda u: deep_probe(u, args.timeout), cand))
+        deep_ok = {u: r[0] for u, r in zip(cand, deep)}
+        deep_kbps = {u: r[1] for u, r in zip(cand, deep)}
+        print("分片可播:", sum(1 for r in deep if r[0]), "/", len(cand),
+              "| 用时: %ds" % int(time.time() - t1))
 
-    final, dropped = [], 0
+    final, dropped, kept_dead = [], 0, 0
+
+    def rank(u, c):
+        """排序：钉住且实测通过 > 实测通过 > 钉住但已失效 > 未通过 > 软黑名单域名。
+        带宽作次级键——能播但只有几十 KB/s 的源，播半分钟就会卡，必须排在后面。"""
+        d = deep_ok.get(u, False)
+        p = u in pinned
+        s = cn_soft(u)
+        if s and not p:
+            base = 4
+        elif p and d:
+            base = 0
+        elif d:
+            base = 1
+        elif p:
+            base = 2
+        else:
+            base = 3
+        return (base, -deep_kbps.get(u, 0), -score(u, c["srcmap"].get(u, 9)))
+
     for k in order:
         c = chans[k]
         live = [u for u in c["uris"] if ok.get(u) or u in pinned]
+        # 有些频道（ViuTV / 翡翠台这类）上游只挂在转发域名下，探活常年失败。
+        # 全灭时仍然保留 1 条，否则频道会整条从清单里消失——用户看到的是「台没了」，
+        # 比「点进去提示线路不可用」糟糕得多。只留 1 条，避免播放器连续重试十几条死链。
+        only_dead = False
+        if not live and k in KEEP_CHANNELS and c["uris"]:
+            live = sorted(c["uris"], key=lambda u: -score(u, c["srcmap"].get(u, 9)))[:1]
+            only_dead = True
+            kept_dead += 1
         if not live:
             dropped += 1
             continue
-        # 钉住的最前；其余按“分片验证通过 > 评分”排，未通过分片验证的留作兜底
-        live.sort(key=lambda u: (u not in pinned, not deep_ok.get(u, False),
-                                 -score(u, c["srcmap"].get(u, 9))))
-        c["uris"] = live[: args.max_uris]
+        live.sort(key=lambda u: rank(u, c))
+        c["uris"] = live[: 1 if only_dead else args.max_uris]
         c["official"] = any(h in c["uris"][0] for h in OFFICIAL)
+        c["unstable"] = only_dead
         final.append(c)
 
     def grank(c):
@@ -519,6 +594,7 @@ def main():
         "urls_listed": int(sum(flags)),
         "urls_alive": sum(1 for v in ok.values() if v),
         "dropped_all_dead": dropped,
+        "kept_but_unstable": kept_dead,
         "sources": stats,
     }
     with open(os.path.join(args.out_dir, "meta.json"), "w", encoding="utf-8") as f:
