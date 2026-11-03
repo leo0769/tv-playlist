@@ -43,6 +43,36 @@ OFFICIAL = (
 # 纯音频电台：电视上表现为黑屏有声
 AUDIO_ONLY = ("ls.qingting.fm", "lhttp.qingting.fm")
 
+# 频道分组展示顺序（2026-11-03）。
+#
+# 改这个的原因：旧逻辑只把「央视 / 卫视 / 其它」分三档，剩下 300 多个台按分组名的
+# 字符顺序排，于是「上海频道」排在「儿童频道」前面、「吉林频道」排在「广东频道」前面，
+# 同名的省市台被冲得七零八落。实测 339 个台里「广东体育」落在第 276 位、
+# 「翡翠台」第 302 位，遥控器要按 276 下才翻得到——用户体感就是「这个台没了」。
+#
+# 现在按固定分组块排列，块内按频道名稳定排序，每次构建顺序一致，不会今天在这儿、
+# 明天跑那儿。广东用户优先，所以广东频道和港澳台紧跟央视卫视。
+GROUP_ORDER = (
+    "央视频道", "广东频道", "港澳台", "体育", "卫视频道",
+    "电影频道", "纪录频道", "儿童频道", "动画频道", "音乐",
+)
+# 付费/剧场/轮播类沉到最后：绝大多数人不看，却占了清单开头。
+GROUP_TAIL = ("付费", "剧场", "数字", "轮播", "测试", "其他")
+
+# 用户点名常看、需要在所属分组里排第一的频道。
+PIN_TOP = ("广东体育", "翡翠台", "明珠台", "Viutv")
+
+
+def grank(c):
+    g = re.sub(r"[^\u4e00-\u9fa5A-Za-z]", "", c.get("group", ""))
+    for i, k in enumerate(GROUP_TAIL):
+        if k in g:
+            return 900 + i
+    for i, k in enumerate(GROUP_ORDER):
+        if g == k or g.startswith(k):
+            return i
+    return 500
+
 # 国内网络判死的转发站。这些域名从境外 runner 能连通、从国内用户家宽不通（或反之），
 # 探活结论在两地正好相反，只能按实测结果静态处理。
 #
@@ -548,15 +578,11 @@ def main():
         c["unstable"] = only_dead
         final.append(c)
 
-    def grank(c):
-        g = re.sub(r"[^\u4e00-\u9fa5A-Za-z]", "", c["group"])
-        if "央视" in g or "CCTV" in g.upper():
-            return 0
-        if "卫视" in g:
-            return 1
-        return 2
-
-    final.sort(key=lambda c: (grank(c), 0 if c["official"] else 1, c["group"], c["name"]))
+    # official 只能当最后的平手键：放前面会把同一个组劈成「官方段 + 非官方段」两截，
+    # 清单里就会出现「上海频道(122) ... 上海频道(196)」这种同组两处开花。
+    # PIN_TOP 让用户点名要看的台在本组内置顶（广东体育排在广东频道第一位）。
+    final.sort(key=lambda c: (grank(c), 0 if c["name"] in PIN_TOP else 1,
+                              c["group"], c["name"], 0 if c["official"] else 1))
 
     os.makedirs(args.out_dir, exist_ok=True)
 
