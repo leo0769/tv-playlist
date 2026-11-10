@@ -1,12 +1,12 @@
 {
- "updated": "2026-11-10T19:00:01Z",
- "channels": 325,
- "multi_uri_channels": 100,
+ "updated": "2026-11-10T20:28:55Z",
+ "channels": 331,
+ "multi_uri_channels": 99,
  "official_cdn_channels": 89,
  "urls_tested": 1112,
- "urls_listed": 517,
- "urls_alive": 508,
- "dropped_all_dead": 226,
+ "urls_listed": 524,
+ "urls_alive": 515,
+ "dropped_all_dead": 220,
  "kept_but_unstable": 0,
  "sources": {
   "https://guovin.github.io/iptv-api/result.m3u": 839,
