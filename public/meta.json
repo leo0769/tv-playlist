@@ -1,16 +1,16 @@
 {
- "updated": "2026-11-15T19:24:06Z",
- "channels": 315,
- "multi_uri_channels": 97,
- "official_cdn_channels": 74,
- "urls_tested": 1168,
- "urls_listed": 504,
- "urls_alive": 494,
- "dropped_all_dead": 289,
+ "updated": "2026-11-16T19:57:45Z",
+ "channels": 293,
+ "multi_uri_channels": 95,
+ "official_cdn_channels": 72,
+ "urls_tested": 1117,
+ "urls_listed": 466,
+ "urls_alive": 456,
+ "dropped_all_dead": 271,
  "kept_but_unstable": 0,
  "sources": {
   "https://guovin.github.io/iptv-api/result.m3u": 839,
-  "https://raw.githubusercontent.com/vbskycn/iptv/master/tv/iptv4.m3u": 398,
+  "https://raw.githubusercontent.com/vbskycn/iptv/master/tv/iptv4.m3u": 345,
   "https://raw.githubusercontent.com/YueChan/Live/main/IPTV.m3u": 96,
   "https://iptv-org.github.io/iptv/countries/cn.m3u": 156
  }
